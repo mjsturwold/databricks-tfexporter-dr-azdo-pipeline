@@ -1,0 +1,31 @@
+# Validate stage: Databricks connectivity for one or more workspaces (via the workspace registry).
+# Runnable on its own or composed by orchestrator.yml.
+parameters:
+  - name: workspaces
+    type: object
+    default:
+      - adb-mjsdrdemo
+      - adb-mjsdrdemo-restore
+
+stages:
+  - stage: ConnectDatabricks
+    displayName: 'Validate Databricks connectivity'
+    variables:
+      - group: vg-mjs-drdemo
+      - group: vg-kv-mjs-drdemo
+      - template: ../templates/vars-workspaces.yml
+    jobs:
+      - ${{ each ws in parameters.workspaces }}:
+        - job: connect_${{ replace(ws, '-', '_') }}
+          displayName: 'Connectivity: ${{ ws }}'
+          pool:
+            vmImage: ubuntu-latest
+          steps:
+            - checkout: none
+            - template: ../templates/steps-install-tooling.yml
+              parameters:
+                installTerraform: false
+                installCli: true
+            - template: ../templates/steps-validate-connectivity.yml
+              parameters:
+                host: $(databricks-host-${{ ws }})

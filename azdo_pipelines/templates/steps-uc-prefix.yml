@@ -1,0 +1,23 @@
+# Reusable step: prefix Unity Catalog object names on restore to avoid metastore collisions.
+# Only runs for UC scopes; a blank prefix is a safe no-op.
+# NOTE: conservative catalog-name pass. The exact transform (schemas/tables/etc.) is validated
+# against real v1.134.0 exporter output during the first UC restore (see spec Open Items).
+parameters:
+  - name: prefix
+    type: string
+  - name: directory
+    type: string
+  - name: objects
+    type: string
+
+steps:
+  - ${{ if or(eq(parameters.objects, 'unity_catalog'), eq(parameters.objects, 'unity_catalog_full'), eq(parameters.objects, 'workspace_and_uc'), eq(parameters.objects, 'all')) }}:
+    - script: |
+        set -euo pipefail
+        DIR='${{ parameters.directory }}'
+        if [ -z "$UC_CATALOG_PREFIX_INPUT" ] || [ "$UC_CATALOG_PREFIX_INPUT" = "none" ]; then echo "No uc_restore_prefix ('none'); skipping prefix pass."; exit 0; fi
+        python3 '$(Build.SourcesDirectory)/azdo_pipelines/scripts/prefix_uc_catalogs.py' \
+          "$DIR" "$UC_CATALOG_PREFIX_INPUT"
+      env:
+        UC_CATALOG_PREFIX_INPUT: ${{ parameters.prefix }}
+      displayName: 'Prefix UC catalog names'

@@ -1,0 +1,15 @@
+# Validate stage: install and verify Terraform + the Databricks TF exporter.
+stages:
+  - stage: InstallTfTools
+    displayName: 'Validate Terraform tooling'
+    jobs:
+      - job: InstallTfTools
+        displayName: 'Install & verify Terraform and exporter'
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: none
+          - template: ../templates/steps-install-tooling.yml
+            parameters:
+              installTerraform: true
+              installExporter: true

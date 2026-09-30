@@ -1,0 +1,27 @@
+# Validate orchestrator: runs every plumbing smoke-test stage in order, reusing the shared
+# step templates in ../templates. Each stage template below is also runnable on its own.
+trigger: none
+name: validate_all_components
+
+parameters:
+  - name: serviceConnection
+    type: string
+    default: sc-mjs-drdemo
+  - name: workspaces
+    type: object
+    default:
+      - adb-mjsdrdemo
+      - adb-mjsdrdemo-restore
+
+stages:
+  - template: connectivity.yml
+    parameters:
+      workspaces: ${{ parameters.workspaces }}
+  - template: terraform_tools.yml
+  - template: export_commit.yml
+  - template: storage_upload.yml
+    parameters:
+      serviceConnection: ${{ parameters.serviceConnection }}
+  - template: storage_download.yml
+    parameters:
+      serviceConnection: ${{ parameters.serviceConnection }}

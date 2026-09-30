@@ -1,0 +1,44 @@
+# Validate stage: upload a marker directory to ADLS.
+parameters:
+  - name: serviceConnection
+    type: string
+    default: sc-mjs-drdemo
+  - name: validatePath
+    type: string
+    default: 'terraform_export/_validate'
+
+stages:
+  - stage: ValidateStorageUpload
+    displayName: 'Validate ADLS upload'
+    variables:
+      - group: vg-mjs-drdemo
+    jobs:
+      - job: StorageUpload
+        displayName: 'Upload marker directory to ADLS'
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            clean: true
+            fetchDepth: 0
+          - script: |
+              set -euo pipefail
+              dir='$(Build.Repository.LocalPath)/${{ parameters.validatePath }}'
+              mkdir -p "$dir"
+              echo "retained $(Build.BuildId)" > "$dir/mirror-retained.txt"
+              echo "stale $(Build.BuildId)" > "$dir/mirror-stale.txt"
+            displayName: 'Create upload test file'
+          - template: ../templates/steps-adls-upload.yml
+            parameters:
+              serviceConnection: ${{ parameters.serviceConnection }}
+              exportPath: ${{ parameters.validatePath }}
+              sourceDir: '$(Build.Repository.LocalPath)/${{ parameters.validatePath }}'
+          - script: |
+              set -euo pipefail
+              rm '$(Build.Repository.LocalPath)/${{ parameters.validatePath }}/mirror-stale.txt'
+            displayName: 'Remove stale local marker'
+          - template: ../templates/steps-adls-upload.yml
+            parameters:
+              serviceConnection: ${{ parameters.serviceConnection }}
+              exportPath: ${{ parameters.validatePath }}
+              sourceDir: '$(Build.Repository.LocalPath)/${{ parameters.validatePath }}'

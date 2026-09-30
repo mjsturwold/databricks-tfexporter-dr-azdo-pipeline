@@ -1,0 +1,37 @@
+# Reusable step: upload a Terraform export directory to ADLS.
+parameters:
+  - name: serviceConnection
+    type: string
+  - name: exportPath
+    type: string
+  - name: sourceDir
+    type: string
+
+steps:
+  - task: AzureCLI@2
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      workingDirectory: ${{ parameters.sourceDir }}
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        set -euo pipefail
+        ACCOUNT='$(storage-account-name)'
+        CONTAINER='$(storage-container-name)'
+        EXPORT_PATH='${{ parameters.exportPath }}'
+        ACCOUNT_KEY="$(az storage account keys list \
+          --resource-group '$(azure-resource-group)' \
+          --account-name "$ACCOUNT" \
+          --query '[0].value' \
+          --output tsv)"
+        test -n "$ACCOUNT_KEY"
+        echo "Mirroring to account=$ACCOUNT container=$CONTAINER prefix=$EXPORT_PATH"
+        az storage blob sync \
+          --account-name "$ACCOUNT" \
+          --account-key "$ACCOUNT_KEY" \
+          --container "$CONTAINER" \
+          --source . \
+          --destination "$EXPORT_PATH" \
+          --delete-destination true
+        unset ACCOUNT_KEY
+    displayName: 'Upload TF export to ADLS'

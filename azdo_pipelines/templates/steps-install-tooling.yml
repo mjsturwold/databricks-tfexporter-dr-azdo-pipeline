@@ -1,0 +1,65 @@
+# Reusable steps: install Terraform, Databricks TF exporter, and/or Databricks CLI.
+parameters:
+  - name: installTerraform
+    type: boolean
+    default: true
+  - name: installExporter
+    type: boolean
+    default: false
+  - name: installCli
+    type: boolean
+    default: false
+  - name: terraformVersion
+    type: string
+    default: '1.5.5'
+  - name: exporterVersion
+    type: string
+    default: '1.134.0'
+  - name: databricksCliVersion
+    type: string
+    default: '0.281.0'
+
+steps:
+  - ${{ if parameters.installTerraform }}:
+    - script: |
+        set -euo pipefail
+        ARCHIVE="terraform_${{ parameters.terraformVersion }}_linux_amd64.zip"
+        BASE="https://releases.hashicorp.com/terraform/${{ parameters.terraformVersion }}"
+        wget -q "$BASE/$ARCHIVE" "$BASE/terraform_${{ parameters.terraformVersion }}_SHA256SUMS"
+        grep " $ARCHIVE$" "terraform_${{ parameters.terraformVersion }}_SHA256SUMS" | sha256sum -c -
+        unzip -o "$ARCHIVE"
+        sudo mv terraform /usr/local/bin/
+        rm -f "terraform_${{ parameters.terraformVersion }}_linux_amd64.zip"
+        terraform -v
+      displayName: 'Install Terraform ${{ parameters.terraformVersion }}'
+
+  - ${{ if parameters.installExporter }}:
+    - script: |
+        set -euo pipefail
+        mkdir -p '$(Agent.BuildDirectory)/tools'
+        cd '$(Agent.BuildDirectory)/tools'
+        ARCHIVE="terraform-provider-databricks_${{ parameters.exporterVersion }}_linux_amd64.zip"
+        CHECKSUMS="terraform-provider-databricks_${{ parameters.exporterVersion }}_SHA256SUMS"
+        BASE="https://github.com/databricks/terraform-provider-databricks/releases/download/v${{ parameters.exporterVersion }}"
+        wget -q "$BASE/$ARCHIVE" "$BASE/$CHECKSUMS"
+        grep " $ARCHIVE$" "$CHECKSUMS" | sha256sum -c -
+        unzip -o "$ARCHIVE"
+        mv "terraform-provider-databricks_v${{ parameters.exporterVersion }}" terraform_exporter
+        chmod +x terraform_exporter
+        rm -f "terraform-provider-databricks_${{ parameters.exporterVersion }}_linux_amd64.zip"
+        ./terraform_exporter exporter -h || true
+      displayName: 'Install Databricks TF Exporter ${{ parameters.exporterVersion }}'
+
+  - ${{ if parameters.installCli }}:
+    - script: |
+        set -euo pipefail
+        VERSION='${{ parameters.databricksCliVersion }}'
+        ARCHIVE="databricks_cli_${VERSION}_linux_amd64.zip"
+        CHECKSUMS="databricks_cli_${VERSION}_SHA256SUMS"
+        BASE="https://github.com/databricks/cli/releases/download/v${VERSION}"
+        wget -q "$BASE/$ARCHIVE" "$BASE/$CHECKSUMS"
+        grep " $ARCHIVE$" "$CHECKSUMS" | sha256sum -c -
+        unzip -o "$ARCHIVE"
+        sudo mv databricks /usr/local/bin/
+        databricks version
+      displayName: 'Install Databricks CLI ${{ parameters.databricksCliVersion }}'

@@ -1,0 +1,19 @@
+# Reusable step: verify Databricks connectivity with the service principal.
+# Requires the Databricks CLI to be installed (steps-install-tooling.yml installCli=true).
+parameters:
+  - name: host
+    type: string
+
+steps:
+  - script: |
+      set -euo pipefail
+      echo "DATABRICKS_HOST=$DATABRICKS_HOST"
+      databricks current-user me
+      databricks clusters list --output json > /dev/null
+      echo "Databricks connectivity OK"
+    env:
+      DATABRICKS_HOST: ${{ parameters.host }}
+      ARM_TENANT_ID: $(tenant-id)
+      ARM_CLIENT_ID: $(client-id)
+      ARM_CLIENT_SECRET: $(client-secret)
+    displayName: 'Validate Databricks connectivity'

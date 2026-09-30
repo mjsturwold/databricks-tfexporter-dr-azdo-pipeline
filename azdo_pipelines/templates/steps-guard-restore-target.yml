@@ -1,0 +1,34 @@
+# Reusable step: surface/enforce the restore-target policy resolved in restore_plan_apply.yml.
+#   allowed  -> proceed (standard approval environment on Apply)
+#   approval -> proceed, but Apply is bound to the restricted approval environment
+#   blocked  -> hard fail here, before any download/commit/plan
+parameters:
+  - name: env
+    type: string
+  - name: policy
+    type: string
+  - name: reason
+    type: string
+    default: ''
+
+steps:
+  - script: |
+      set -euo pipefail
+      POLICY='${{ parameters.policy }}'
+      case "$POLICY" in
+        allowed)
+          echo "Restore target '${{ parameters.env }}': standard approval."
+          ;;
+        approval)
+          echo "Restore target '${{ parameters.env }}': RESTRICTED approval required — ${{ parameters.reason }}"
+          ;;
+        blocked)
+          echo "##vso[task.logissue type=error]Restore to '${{ parameters.env }}' is BLOCKED. ${{ parameters.reason }}"
+          exit 1
+          ;;
+        *)
+          echo "##vso[task.logissue type=error]No restore policy resolved for '${{ parameters.env }}' (got '$POLICY')."
+          exit 1
+          ;;
+      esac
+    displayName: 'Guard: restore target policy'

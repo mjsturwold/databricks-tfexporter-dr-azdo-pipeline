@@ -1,0 +1,47 @@
+# Reusable step: commit and push a path to the triggering branch (no-op if clean).
+# Requires the job to use `checkout: self` with `persistCredentials: true`.
+parameters:
+  - name: message
+    type: string
+  - name: addPath
+    type: string
+
+steps:
+  - script: |
+      set -euo pipefail
+      cd '$(Build.Repository.LocalPath)'
+      git config user.email "azure-pipelines@databricks.com"
+      git config user.name "Azure Pipelines"
+      git add -A '${{ parameters.addPath }}'
+      if git diff --cached --quiet; then
+        echo "No changes to commit for '${{ parameters.addPath }}'."
+      else
+        git commit -m "${{ parameters.message }}"
+        # Exporter/tool installation can leave unrelated generated files in the checkout. Keep
+        # those files out of this scoped commit and make the worktree clean before rebasing.
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "Isolating unrelated generated files before rebase:"
+          git status --short
+          git stash push --include-untracked --message "pipeline-rebase-scratch-$(Build.BuildId)"
+        fi
+        git fetch origin "$(Build.SourceBranch)"
+        if ! git rebase FETCH_HEAD; then
+          git rebase --abort >/dev/null 2>&1 || true
+          echo "##vso[task.logissue type=error]Unable to rebase generated changes onto the current source branch."
+          exit 1
+        fi
+        for attempt in 1 2 3; do
+          if git push origin "HEAD:$(Build.SourceBranch)"; then exit 0; fi
+          if [ "$attempt" = 3 ]; then
+            echo "##vso[task.logissue type=error]Git push failed after three attempts."
+            exit 1
+          fi
+          git fetch origin "$(Build.SourceBranch)"
+          if ! git rebase FETCH_HEAD; then
+            git rebase --abort >/dev/null 2>&1 || true
+            echo "##vso[task.logissue type=error]Concurrent update caused a rebase conflict."
+            exit 1
+          fi
+        done
+      fi
+    displayName: 'Commit & push ${{ parameters.addPath }}'

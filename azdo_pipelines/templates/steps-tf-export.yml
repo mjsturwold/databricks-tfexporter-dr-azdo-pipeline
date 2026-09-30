@@ -1,0 +1,99 @@
+# Reusable step: run the Databricks Terraform exporter with resolved services/catalog scope.
+# Resolves listing/services/matchRegex in bash so the object scope, granular override,
+# and catalog filter are handled in one place.
+parameters:
+  - name: objects
+    type: string
+  - name: servicesOverride
+    type: string
+    default: ''
+  - name: catalogs
+    type: string
+    default: ''
+  - name: incremental
+    type: boolean
+    default: false
+  - name: directory
+    type: string
+  - name: host
+    type: string
+
+steps:
+  - script: |
+      set -euo pipefail
+      mkdir -p '${{ parameters.directory }}'
+
+      # Seed exporter-run-stats.json so -incremental has a baseline on first run.
+      STATS='${{ parameters.directory }}/exporter-run-stats.json'
+      if [ ! -f "$STATS" ]; then
+        echo '{"duration":"10.336499 sec","exportedObjects":0,"startTime":"2010-01-01T00:00:00Z"}' > "$STATS"
+      fi
+
+      OBJECTS='${{ parameters.objects }}'
+      OVERRIDE="$(printf '%s' "$SERVICES_OVERRIDE_INPUT" | xargs)"
+      CATALOGS="$(printf '%s' "$CATALOGS_INPUT" | xargs)"
+      SERVICE_TOKEN_RE='^-?[A-Za-z0-9][A-Za-z0-9_-]*$'
+      CATALOG_RE='^[A-Za-z_][A-Za-z0-9_-]*$'
+      IFS=',' read -ra SERVICE_TOKENS <<< "$OVERRIDE"
+      for token in "${SERVICE_TOKENS[@]}"; do
+        [ -n "$token" ] && [[ "$token" =~ $SERVICE_TOKEN_RE ]] || { echo "Invalid service token"; exit 1; }
+      done
+
+      case "$OBJECTS" in
+        workspace)          SERVICES='access,compute,directories,dlt,jobs,notebooks,policies,secrets,sql-endpoints,storage,wsconf,wsfiles'; EXTRA='-exportDeletedUsersAssets';;
+        unity_catalog)      SERVICES='uc-catalogs,uc-schemas,uc-tables,uc-grants'; EXTRA='';;
+        unity_catalog_full) SERVICES='uc'; EXTRA='';;
+        workspace_and_uc)   SERVICES='access,compute,directories,dlt,jobs,notebooks,policies,secrets,sql-endpoints,storage,wsconf,wsfiles,uc-catalogs,uc-schemas,uc-tables,uc-grants'; EXTRA='-exportDeletedUsersAssets';;
+        # 'all' = exporter alias for EVERY supported service: the workspace + UC objects above,
+        # PLUS the account/global layer that lives outside a single workspace and is risky to
+        # blindly re-apply: users, groups, mws (account/multi-workspace), idfed (identity
+        # federation), nccs (network connectivity configs), billing, settings, uc-metastores,
+        # uc-storage-credentials, uc-external-locations, uc-credentials, and any new services the
+        # provider adds. Reference/inspection scope, not a routine restore target.
+        all)                SERVICES='all'; EXTRA='-exportDeletedUsersAssets';;
+        *) echo "unknown objects '$OBJECTS'"; exit 1;;
+      esac
+
+      # Granular override replaces both -listing and -services. 'preset'/blank = keep preset.
+      if [ -n "$OVERRIDE" ] && [ "$OVERRIDE" != "preset" ]; then SERVICES="$OVERRIDE"; fi
+
+      # Catalog filter -> matchRegex on catalog + dotted children (e.g. cat.schema.table).
+      # 'all'/blank = no filter.
+      EXTRA_ARGS=()
+      if [ -n "$EXTRA" ]; then EXTRA_ARGS+=("$EXTRA"); fi
+      if [ -n "$CATALOGS" ] && [ "$CATALOGS" != "all" ]; then
+        IFS=',' read -ra CATALOG_TOKENS <<< "$CATALOGS"
+        escaped_catalogs=()
+        for catalog in "${CATALOG_TOKENS[@]}"; do
+          [ -n "$catalog" ] && [[ "$catalog" =~ $CATALOG_RE ]] || { echo "Invalid catalog token"; exit 1; }
+          escaped_catalogs+=("$(printf '%s' "$catalog" | sed 's/[][(){}.^$*+?|\\]/\\&/g')")
+        done
+        joined="$(IFS='|'; echo "${escaped_catalogs[*]}")"
+        EXTRA_ARGS+=("-matchRegex=^(${joined})(\$|\\.)")
+      fi
+
+      INC_ARGS=()
+      INC='${{ parameters.incremental }}'
+      if [ "$INC" = "True" ] || [ "$INC" = "true" ]; then INC_ARGS+=('-incremental'); fi
+
+      echo "Resolved -listing/-services: $SERVICES"
+      echo "Extra options validated"
+
+      cd '$(Agent.BuildDirectory)/tools'
+      ./terraform_exporter exporter \
+        -skip-interactive \
+        -listing "$SERVICES" \
+        -services "$SERVICES" \
+        "${EXTRA_ARGS[@]}" \
+        -directory '${{ parameters.directory }}' \
+        -native-import \
+        "${INC_ARGS[@]}" \
+        -noformat
+    env:
+      SERVICES_OVERRIDE_INPUT: ${{ parameters.servicesOverride }}
+      CATALOGS_INPUT: ${{ parameters.catalogs }}
+      DATABRICKS_HOST: ${{ parameters.host }}
+      ARM_TENANT_ID: $(tenant-id)
+      ARM_CLIENT_ID: $(client-id)
+      ARM_CLIENT_SECRET: $(client-secret)
+    displayName: 'Terraform export (${{ parameters.objects }})'

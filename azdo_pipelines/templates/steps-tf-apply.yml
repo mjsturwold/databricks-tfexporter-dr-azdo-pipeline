@@ -1,0 +1,36 @@
+# Reusable steps: download the restore code artifact, terraform init + apply.
+# Intended for a deployment job bound to an approval-gated environment.
+parameters:
+  - name: artifactName
+    type: string
+  - name: backendKey
+    type: string
+  - name: host
+    type: string
+
+steps:
+  - download: current
+    artifact: ${{ parameters.artifactName }}
+
+  - script: |
+      set -euo pipefail
+      cd '$(Pipeline.Workspace)/${{ parameters.artifactName }}'
+      terraform init -input=false -lockfile=readonly \
+        -backend-config="resource_group_name=$(azure-resource-group)" \
+        -backend-config="storage_account_name=$(storage-account-name)" \
+        -backend-config="container_name=$(storage-container-name)" \
+        -backend-config="key=${{ parameters.backendKey }}"
+      test -f tfplan
+      set +e
+      terraform apply -input=false tfplan 2>&1 | tee terraform-apply.log
+      APPLY_STATUS=${PIPESTATUS[0]}
+      set -e
+      bash '$(Build.SourcesDirectory)/azdo_pipelines/scripts/classify_tf_apply.sh' \
+        terraform-apply.log "$APPLY_STATUS"
+    env:
+      DATABRICKS_HOST: ${{ parameters.host }}
+      ARM_TENANT_ID: $(tenant-id)
+      ARM_CLIENT_ID: $(client-id)
+      ARM_CLIENT_SECRET: $(client-secret)
+      ARM_SUBSCRIPTION_ID: $(azure-subscription-id)
+    displayName: 'Terraform apply'

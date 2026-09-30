@@ -1,0 +1,48 @@
+# Reusable steps: terraform init (azurerm backend) + plan, then publish the code as an artifact.
+parameters:
+  - name: codePath
+    type: string
+  - name: backendKey
+    type: string
+  - name: host
+    type: string
+  - name: artifactName
+    type: string
+  # Keep import.tf only for a same-workspace restore (restore_to_env == restore_from_env), so
+  # Terraform ADOPTS the still-existing resources into a fresh state. For a cross-workspace restore
+  # the native-import IDs point at the source workspace and would fail, so we drop them.
+  - name: keepImport
+    type: boolean
+    default: false
+
+steps:
+  - script: |
+      set -euo pipefail
+      cd '${{ parameters.codePath }}'
+      KEEP_IMPORT='${{ parameters.keepImport }}'
+      if [ "$KEEP_IMPORT" = "True" ] || [ "$KEEP_IMPORT" = "true" ]; then
+        echo "Same-workspace restore: keeping import.tf so Terraform adopts existing resources."
+      else
+        echo "Cross-workspace restore: dropping import.tf (native-import IDs reference the source workspace)."
+        rm -f import.tf
+      fi
+      terraform init -input=false \
+        -backend-config="resource_group_name=$(azure-resource-group)" \
+        -backend-config="storage_account_name=$(storage-account-name)" \
+        -backend-config="container_name=$(storage-container-name)" \
+        -backend-config="key=${{ parameters.backendKey }}"
+      terraform plan -input=false -out=tfplan
+      terraform show -no-color tfplan > tfplan.txt
+      # Apply re-initializes providers; retain the lock file and exact approved plan.
+      rm -rf .terraform
+    env:
+      DATABRICKS_HOST: ${{ parameters.host }}
+      ARM_TENANT_ID: $(tenant-id)
+      ARM_CLIENT_ID: $(client-id)
+      ARM_CLIENT_SECRET: $(client-secret)
+      ARM_SUBSCRIPTION_ID: $(azure-subscription-id)
+    displayName: 'Terraform init & plan'
+
+  - publish: '${{ parameters.codePath }}'
+    artifact: ${{ parameters.artifactName }}
+    displayName: 'Publish restore code artifact'

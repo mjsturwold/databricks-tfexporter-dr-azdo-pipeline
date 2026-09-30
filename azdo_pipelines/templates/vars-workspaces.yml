@@ -1,0 +1,34 @@
+# Workspace registry: the single source of truth for each workspace's host AND restore class.
+# Hosts are NOT secrets, so they live in the repo (client-id/client-secret stay in vg-kv-mjs-drdemo).
+#
+# To add a workspace:
+#   1. Add its host:   databricks-host-<env>  -> host URL
+#   2. Add its class:  restore-class-<env>    -> allowed | approval | blocked
+#   3. Add <env> to the `values:` dropdown of the relevant parameter(s) in the pipelines.
+#
+# How these are consumed:
+#   host  -> host: $(databricks-host-${{ parameters.source_env }})           (runtime macro)
+#   class -> restore_plan_apply.yml reads restore-class-<restore_to_env> at COMPILE TIME to pick
+#            the ADO approval environment (the environment name must be static, so it is resolved
+#            from this registry via a compile-time expression).
+#
+# Restore class:
+#   allowed  -> standard approval environment   (env-mjs-drdemo-tfapply)
+#   approval -> restricted approval environment  (env-mjs-drdemo-restore-restricted, stricter approvers)
+#   blocked  -> hard-fails in the restore Plan guard (never reaches apply)
+# Note: EVERY restore hits an approval environment; the class selects standard vs restricted
+# approvers. A UC restore with uc_restore_prefix = none/blank is escalated to 'approval' regardless
+# of the target's class. The `all` scope always uses restricted approval because it can include
+# account/global resources (cross-cutting rules applied in restore_plan_apply.yml).
+variables:
+  # --- adb-mjsdrdemo: demo export SOURCE (protected — not a routine restore target) ---
+  - name: databricks-host-adb-mjsdrdemo
+    value: 'https://adb-0000000000000000.0.azuredatabricks.net/'  # replace with your source workspace URL
+  - name: restore-class-adb-mjsdrdemo
+    value: approval
+
+  # --- adb-mjsdrdemo-restore: restore TARGET ---
+  - name: databricks-host-adb-mjsdrdemo-restore
+    value: 'https://adb-1111111111111111.1.azuredatabricks.net/'  # replace with your restore workspace URL
+  - name: restore-class-adb-mjsdrdemo-restore
+    value: allowed

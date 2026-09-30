@@ -1,0 +1,39 @@
+# Validate stage: download the marker directory from ADLS and commit it back.
+parameters:
+  - name: serviceConnection
+    type: string
+    default: sc-mjs-drdemo
+  - name: validatePath
+    type: string
+    default: 'terraform_export/_validate'
+
+stages:
+  - stage: ValidateStorageDownload
+    displayName: 'Validate ADLS download'
+    variables:
+      - group: vg-mjs-drdemo
+    jobs:
+      - job: StorageDownload
+        displayName: 'Download marker directory from ADLS and commit'
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            persistCredentials: true
+            clean: true
+            fetchDepth: 0
+          - template: ../templates/steps-adls-download.yml
+            parameters:
+              serviceConnection: ${{ parameters.serviceConnection }}
+              exportPath: ${{ parameters.validatePath }}
+              destRoot: '$(Build.Repository.LocalPath)/terraform_export/'
+              required: true
+          - script: |
+              set -euo pipefail
+              test -f '$(Build.Repository.LocalPath)/${{ parameters.validatePath }}/mirror-retained.txt'
+              test ! -e '$(Build.Repository.LocalPath)/${{ parameters.validatePath }}/mirror-stale.txt'
+            displayName: 'Assert stale marker was deleted'
+          - template: ../templates/steps-git-commit-push.yml
+            parameters:
+              message: 'Validate storage download (build $(Build.BuildId))'
+              addPath: '${{ parameters.validatePath }}'

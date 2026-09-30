@@ -1,0 +1,158 @@
+# Pipeline 2 - Databricks DR restore: optionally pull an export from ADLS, terraform plan,
+# approval gate (environment), then terraform apply into the target workspace.
+trigger: none
+name: restore_plan_apply
+
+parameters:
+  - name: restore_to_env
+    displayName: Restore to workspace
+    type: string
+    default: adb-mjsdrdemo-restore
+    values:
+      - adb-mjsdrdemo-restore
+      - adb-mjsdrdemo
+  - name: restore_from_env
+    displayName: Restore from export
+    type: string
+    default: adb-mjsdrdemo
+    values:
+      - adb-mjsdrdemo
+      - adb-mjsdrdemo-restore
+  - name: restore_from_location
+    displayName: Restore source
+    type: string
+    default: adls
+    values:
+      - adls
+      - version_control
+  - name: objects
+    displayName: Object scope preset (must match the backup that produced the export)
+    type: string
+    default: workspace
+    values:
+      - workspace
+      - unity_catalog
+      - unity_catalog_full
+      - workspace_and_uc
+      - all
+  - name: uc_restore_prefix
+    displayName: "UC name prefix to avoid metastore collisions ('none' = no prefix; requires restricted approval)"
+    type: string
+    default: 'drrestore_'
+variables:
+  - group: vg-mjs-drdemo
+  - group: vg-kv-mjs-drdemo
+  - template: templates/vars-workspaces.yml
+  - name: code_path
+    value: terraform_export/${{ parameters.restore_from_env }}/${{ parameters.objects }}
+  - name: backend_key
+    value: tfstate/${{ parameters.restore_to_env }}/${{ parameters.objects }}/terraform.tfstate
+  - name: artifact_name
+    value: ${{ parameters.restore_to_env }}_${{ parameters.objects }}
+  # Host resolved by convention from the workspace registry (templates/vars-workspaces.yml).
+  - name: restore_host
+    value: $(databricks-host-${{ parameters.restore_to_env }})
+
+  # --- Restore policy resolution (compile-time; the ADO environment/approval gate must be static) ---
+  # Per-target class comes from restore-class-<env> in the workspace registry
+  # (templates/vars-workspaces.yml) — the single source of truth. A UC restore with a blank/none
+  # uc_restore_prefix is escalated to 'approval' regardless of the target's class.
+  # Class -> environment: approval => restricted approval env; allowed => standard; blocked => guard fails.
+  - ${{ if eq(variables[format('restore-class-{0}', parameters.restore_to_env)], 'blocked') }}:
+    - name: restore_policy
+      value: blocked
+    - name: apply_environment
+      value: env-mjs-drdemo-tfapply
+    - name: restore_gate_reason
+      value: "target '${{ parameters.restore_to_env }}' is marked restore-class=blocked in the workspace registry"
+  - ${{ elseif or(eq(variables[format('restore-class-{0}', parameters.restore_to_env)], 'approval'), eq(parameters.objects, 'all'), and(or(eq(parameters.uc_restore_prefix, ''), eq(parameters.uc_restore_prefix, 'none')), or(eq(parameters.objects, 'unity_catalog'), eq(parameters.objects, 'unity_catalog_full'), eq(parameters.objects, 'workspace_and_uc')))) }}:
+    - name: restore_policy
+      value: approval
+    - name: apply_environment
+      value: env-mjs-drdemo-restore-restricted
+    - name: restore_gate_reason
+      value: "target restore-class=approval, objects=all, or UC objects restored without a uc_restore_prefix (collision risk)"
+  - ${{ else }}:
+    - name: restore_policy
+      value: allowed
+    - name: apply_environment
+      value: env-mjs-drdemo-tfapply
+    - name: restore_gate_reason
+      value: ""
+
+stages:
+  - stage: Plan
+    displayName: '🔍 Plan - Review Changes'
+    jobs:
+      - job: Plan
+        timeoutInMinutes: 120
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            persistCredentials: true
+            clean: true
+            fetchDepth: 0
+            displayName: 'Checkout source'
+
+          # Surface/enforce the restore policy (blocked -> fail fast, before any work).
+          - template: templates/steps-guard-restore-target.yml
+            parameters:
+              env: ${{ parameters.restore_to_env }}
+              policy: $(restore_policy)
+              reason: $(restore_gate_reason)
+
+          - template: templates/steps-install-tooling.yml
+            parameters:
+              installTerraform: true
+
+          - ${{ if eq(parameters.restore_from_location, 'adls') }}:
+            - template: templates/steps-adls-download.yml
+              parameters:
+                serviceConnection: sc-mjs-drdemo
+                exportPath: $(code_path)
+                destRoot: '$(Build.Repository.LocalPath)/terraform_export/${{ parameters.restore_from_env }}/'
+                required: true
+            - template: templates/steps-git-commit-push.yml
+              parameters:
+                message: 'Restore source $(code_path) from ADLS (build $(Build.BuildId))'
+                addPath: '$(code_path)'
+
+          - template: templates/steps-uc-prefix.yml
+            parameters:
+              prefix: ${{ parameters.uc_restore_prefix }}
+              directory: '$(Build.Repository.LocalPath)/$(code_path)'
+              objects: ${{ parameters.objects }}
+
+          - template: templates/steps-tf-plan.yml
+            parameters:
+              codePath: '$(Build.Repository.LocalPath)/$(code_path)'
+              backendKey: $(backend_key)
+              host: $(restore_host)
+              artifactName: $(artifact_name)
+              # Same-workspace restore keeps import.tf (adopt existing resources); cross-workspace drops it.
+              keepImport: ${{ eq(parameters.restore_to_env, parameters.restore_from_env) }}
+
+  - stage: Apply
+    displayName: '⚠️ Apply - Review Plan Before Approval'
+    dependsOn: Plan
+    jobs:
+      - deployment: Apply
+        timeoutInMinutes: 120
+        environment: ${{ variables.apply_environment }}
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  clean: true
+                - template: templates/steps-install-tooling.yml
+                  parameters:
+                    installTerraform: true
+                - template: templates/steps-tf-apply.yml
+                  parameters:
+                    artifactName: $(artifact_name)
+                    backendKey: $(backend_key)
+                    host: $(restore_host)

@@ -1,0 +1,53 @@
+# Reusable step: download a prior Terraform export directory from ADLS (skips if absent).
+parameters:
+  - name: serviceConnection
+    type: string
+  - name: exportPath
+    type: string
+  - name: destRoot
+    type: string
+  - name: required
+    type: boolean
+    default: false
+
+steps:
+  - task: AzureCLI@2
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        set -euo pipefail
+        EXPORT_PATH='${{ parameters.exportPath }}'
+        CONTAINER='$(storage-container-name)'
+        ACCOUNT='$(storage-account-name)'
+        REQUIRED='${{ parameters.required }}'
+        DEST_ROOT='${{ parameters.destRoot }}'
+        if ! EXISTS_JSON="$(az storage fs directory exists --auth-mode login --name "$EXPORT_PATH" --file-system "$CONTAINER" --account-name "$ACCOUNT" --output json)"; then
+          echo "##vso[task.logissue type=error]Unable to query ADLS export path."
+          exit 1
+        fi
+        EXISTS="$(printf '%s' "$EXISTS_JSON" | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["exists"]).lower())')"
+        if [ "$EXISTS" = true ]; then
+          LOCAL_EXPORT_DIR="${DEST_ROOT%/}/${EXPORT_PATH##*/}"
+          if [ -z "$EXPORT_PATH" ] || [ "$LOCAL_EXPORT_DIR" = "/" ]; then
+            echo "##vso[task.logissue type=error]Refusing to clear an unsafe local export path."
+            exit 1
+          fi
+          rm -rf -- "$LOCAL_EXPORT_DIR"
+          echo "Directory '${{ parameters.exportPath }}' exists; downloading."
+          az storage fs directory download --auth-mode login \
+            --file-system '$(storage-container-name)' \
+            --account-name '$(storage-account-name)' \
+            --source-path '${{ parameters.exportPath }}' \
+            --destination-path '${{ parameters.destRoot }}' \
+            --recursive
+          find '${{ parameters.destRoot }}' -type f | head -50 || true
+        else
+          if [ "$REQUIRED" = True ] || [ "$REQUIRED" = true ]; then
+            echo "##vso[task.logissue type=error]Required ADLS export path does not exist."
+            exit 1
+          fi
+          echo "No prior backup exists; skipping optional download."
+        fi
+    displayName: 'Download TF export from ADLS'

@@ -1,0 +1,125 @@
+# Pipeline 1 - Databricks DR backup: export workspace/UC objects with the Terraform exporter,
+# commit to the repo, and back up to ADLS. Composes reusable templates in ./templates.
+trigger: none
+name: backup_export
+
+parameters:
+  - name: source_env
+    displayName: Source workspace (export from)
+    type: string
+    default: adb-mjsdrdemo
+    values:
+      - adb-mjsdrdemo
+      - adb-mjsdrdemo-restore
+  - name: objects
+    displayName: Object scope preset
+    type: string
+    default: workspace
+    values:
+      - workspace           # workspace object subset
+      - unity_catalog       # core UC: catalogs, schemas, tables, grants
+      - unity_catalog_full  # all UC services + vector search (exporter 'uc' alias)
+      - workspace_and_uc    # workspace subset + core UC in one export (apply-safe combined scope)
+      - all                 # EVERYTHING incl. account/global layer: users, groups, mws, idfed, nccs, billing, settings, uc-metastores, storage-credentials, external-locations. Reference only; risky to apply.
+  - name: isIncremental
+    displayName: Incremental export
+    type: boolean
+    default: false
+  - name: services_override
+    displayName: "Exact services ('preset' = use the Object scope preset above; else exporter names/aliases/exclusions)"
+    type: string
+    default: 'preset'
+    # Examples: 'jobs,notebooks,secrets' | 'uc' | 'all,-uc-tables' | 'uc-catalogs,uc-schemas,uc-volumes'
+  - name: catalogs
+    displayName: "Catalogs to include ('all' = every catalog; else comma-separated names)"
+    type: string
+    default: 'all'
+  - name: runValidation
+    displayName: Run export validation (not yet implemented)
+    type: boolean
+    default: false
+
+variables:
+  - group: vg-mjs-drdemo
+  - group: vg-kv-mjs-drdemo
+  - template: templates/vars-workspaces.yml
+  - name: export_path
+    value: terraform_export/${{ parameters.source_env }}/${{ parameters.objects }}
+
+stages:
+  - stage: Export
+    displayName: '💾 Export & Back Up'
+    jobs:
+      - job: Export
+        timeoutInMinutes: 120
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            persistCredentials: true
+            clean: true
+            fetchDepth: 0
+            displayName: 'Checkout source'
+
+          - template: templates/steps-install-tooling.yml
+            parameters:
+              installTerraform: true
+              installExporter: true
+              installCli: true
+
+          - template: templates/steps-validate-connectivity.yml
+            parameters:
+              host: $(databricks-host-${{ parameters.source_env }})
+
+          - template: templates/steps-adls-download.yml
+            parameters:
+              serviceConnection: sc-mjs-drdemo
+              exportPath: $(export_path)
+              destRoot: '$(Build.Repository.LocalPath)/terraform_export/${{ parameters.source_env }}/'
+              required: false
+
+          - template: templates/steps-tf-export.yml
+            parameters:
+              objects: ${{ parameters.objects }}
+              servicesOverride: ${{ parameters.services_override }}
+              catalogs: ${{ parameters.catalogs }}
+              incremental: ${{ parameters.isIncremental }}
+              directory: '$(Build.Repository.LocalPath)/$(export_path)'
+              host: $(databricks-host-${{ parameters.source_env }})
+
+          - script: |
+              set -euo pipefail
+              cat > '$(Build.Repository.LocalPath)/$(export_path)/backend.tf' << 'EOF'
+              terraform {
+                backend "azurerm" {
+                }
+              }
+              EOF
+            displayName: 'Write azurerm backend.tf'
+
+          - template: templates/steps-git-commit-push.yml
+            parameters:
+              message: 'Export $(export_path) (build $(Build.BuildId))'
+              addPath: '$(export_path)'
+
+          - template: templates/steps-adls-upload.yml
+            parameters:
+              serviceConnection: sc-mjs-drdemo
+              exportPath: $(export_path)
+              sourceDir: '$(Build.Repository.LocalPath)/$(export_path)'
+
+  # Extension point for future export validation (Lakeflow job / notebook / Databricks SDK).
+  - ${{ if eq(parameters.runValidation, true) }}:
+    - stage: ValidateExport
+      displayName: '🧪 Validate Export'
+      dependsOn: Export
+      jobs:
+        - job: ValidateExport
+          pool:
+            vmImage: ubuntu-latest
+          steps:
+            - script: |
+                set -euo pipefail
+                echo "##vso[task.logissue type=error]Export validation is not implemented."
+                exit 1
+              displayName: 'Export validation (placeholder)'

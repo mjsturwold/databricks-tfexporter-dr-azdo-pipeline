@@ -1,0 +1,29 @@
+# Validate stage: git commit/push plumbing (write a marker file and push it to the branch).
+parameters:
+  - name: validatePath
+    type: string
+    default: 'terraform_export/_validate'
+
+stages:
+  - stage: ValidateExportCommit
+    displayName: 'Validate commit & push'
+    jobs:
+      - job: ExportCommit
+        displayName: 'Create marker file, commit, and push'
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            persistCredentials: true
+            clean: true
+            fetchDepth: 0
+          - script: |
+              set -euo pipefail
+              dir='$(Build.Repository.LocalPath)/${{ parameters.validatePath }}'
+              mkdir -p "$dir"
+              echo "validate build $(Build.BuildId) at $(date -u +%FT%TZ)" > "$dir/validate_$(Build.BuildId).txt"
+            displayName: 'Create validation marker file'
+          - template: ../templates/steps-git-commit-push.yml
+            parameters:
+              message: 'Validate commit/push (build $(Build.BuildId))'
+              addPath: '${{ parameters.validatePath }}'
